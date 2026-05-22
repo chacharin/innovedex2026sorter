@@ -1,10 +1,19 @@
-﻿
+"""Node 6 — CSV Pose Tester.
+
+โหลดไฟล์ CSV ที่บันทึกไว้ แล้วทดสอบ pose แต่ละ row โดยส่งคำสั่งไปยัง arduino_node
+ผ่าน ZMQ เพื่อให้แขนกลขยับไปยังตำแหน่งนั้นๆ
+
+ฟีเจอร์:
+  • เลือกไฟล์ CSV จาก dropdown
+  • ทดสอบ pose ที่เลือก (TEST SELECTED)
+  • เล่น pose ทั้งหมดตามลำดับ (PLAY ALL) พร้อมตั้งเวลา delay
+  • หยุดการเล่น (STOP)
+"""
 
 import csv
 import os
 import time
 import threading
-import tkinter as tk
 from tkinter import ttk, messagebox
 
 import customtkinter as ctk
@@ -14,10 +23,10 @@ import zmq
 # =========================================================
 # CONFIG
 # =========================================================
-DATA_DIR = "data"
+DATA_DIR       = "data"
 PORT_SERVO_CMD = 5555
 TOPIC_SERVO_CMD = "servo_cmd"
-ADDR_CONN = "tcp://localhost:{}"
+ADDR_CONN      = "tcp://localhost:{}"
 
 
 # =========================================================
@@ -29,8 +38,7 @@ class CsvPoseTester:
         self.root.title("CSV Pose Tester")
         self.root.geometry("640x640")
 
-
-        self.running = False
+        self.running      = False
         self.current_rows = []
 
         # ZMQ
@@ -56,7 +64,7 @@ class CsvPoseTester:
 
         ctk.CTkLabel(top, text="File:", font=("Tahoma", 18, "bold")).pack(side="left")
 
-        self.file_var = tk.StringVar()
+        self.file_var = ctk.StringVar()
         # Keep ttk.Combobox — <<ComboboxSelected>> binding is needed for file selection
         self.file_combo = ttk.Combobox(
             top, textvariable=self.file_var, state="readonly", width=26)
@@ -74,8 +82,7 @@ class CsvPoseTester:
         delay_frame.pack(fill="x", padx=8, pady=1)
 
         ctk.CTkLabel(delay_frame, text="Delay (s):", font=("Tahoma", 18)).pack(side="left")
-        self.delay_var = tk.DoubleVar(value=1.0)
-        # CTkEntry supports textvariable= for DoubleVar
+        self.delay_var = ctk.DoubleVar(value=1.0)
         ctk.CTkEntry(delay_frame, textvariable=self.delay_var, width=60,
                      font=("Tahoma", 16)).pack(side="left", padx=4)
 
@@ -89,16 +96,16 @@ class CsvPoseTester:
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=12)
 
         self.tree.heading("index", text="#")
-        self.tree.heading("s1", text="S1")
-        self.tree.heading("s2", text="S2")
-        self.tree.heading("s3", text="S3")
-        self.tree.heading("s4", text="S4")
+        self.tree.heading("s1",    text="S1")
+        self.tree.heading("s2",    text="S2")
+        self.tree.heading("s3",    text="S3")
+        self.tree.heading("s4",    text="S4")
 
-        self.tree.column("index", width=35, anchor="center")
-        self.tree.column("s1", width=80, anchor="center")
-        self.tree.column("s2", width=80, anchor="center")
-        self.tree.column("s3", width=80, anchor="center")
-        self.tree.column("s4", width=80, anchor="center")
+        self.tree.column("index", width=35,  anchor="center")
+        self.tree.column("s1",    width=80,  anchor="center")
+        self.tree.column("s2",    width=80,  anchor="center")
+        self.tree.column("s3",    width=80,  anchor="center")
+        self.tree.column("s4",    width=80,  anchor="center")
 
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -126,18 +133,14 @@ class CsvPoseTester:
                       command=self.stop_playback).grid(row=0, column=2, padx=3)
 
         # ==========================
-        # STATUS — StringVar with trace so send_pose/stop_playback/_play_worker .set() works unchanged
+        # STATUS
         # ==========================
-        self.status_var = tk.StringVar(value="Ready")
-        self.status_lbl = ctk.CTkLabel(self.root, text=self.status_var.get(),
+        self.status_lbl = ctk.CTkLabel(self.root, text="Ready",
                                        font=("Consolas", 18, "bold"))
         self.status_lbl.pack(pady=2)
-        self.status_var.trace_add("write",
-                                  lambda *_: self.status_lbl.configure(
-                                      text=self.status_var.get()))
 
         # ==========================
-        # LOG — CTkTextbox replaces tk.Text
+        # LOG
         # ==========================
         ctk.CTkLabel(self.root, text="Log", font=("Tahoma", 18, "bold")).pack(anchor="w", padx=8)
         self.log = ctk.CTkTextbox(self.root, height=100,
@@ -145,16 +148,18 @@ class CsvPoseTester:
         self.log.pack(fill="x", padx=8, pady=(0, 6))
 
     # =====================================================
+    # Helpers
+    # =====================================================
+    def _set_status(self, text: str):
+        """อัปเดต status label ด้วยข้อความที่กำหนด"""
+        self.status_lbl.configure(text=text)
+
+    # =====================================================
     # CSV
     # =====================================================
     def _load_csv_files(self):
         os.makedirs(DATA_DIR, exist_ok=True)
-
-        files = [
-            f for f in os.listdir(DATA_DIR)
-            if f.lower().endswith(".csv")
-        ]
-
+        files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(".csv")]
         files.sort()
 
         self.file_combo["values"] = files
@@ -165,38 +170,30 @@ class CsvPoseTester:
 
     def load_selected_csv(self):
         filename = self.file_var.get()
-
         if not filename:
             return
 
         path = os.path.join(DATA_DIR, filename)
-
         self.tree.delete(*self.tree.get_children())
         self.current_rows.clear()
 
         try:
             with open(path, newline="") as f:
                 reader = csv.reader(f)
-
                 try:
-                    next(reader)
+                    next(reader)   # ข้าม header row (Servo1, Servo2, Servo3, Servo4)
                 except StopIteration:
                     return
 
                 for idx, row in enumerate(reader, start=1):
                     if len(row) != 4:
                         continue
-
                     self.current_rows.append(row)
-
-                    self.tree.insert(
-                        "",
-                        "end",
-                        values=(idx, row[0], row[1], row[2], row[3])
-                    )
+                    self.tree.insert("", "end",
+                                     values=(idx, row[0], row[1], row[2], row[3]))
 
             self._log(f"Loaded: {filename}")
-            self.status_var.set(f"Loaded {len(self.current_rows)} poses")
+            self._set_status(f"Loaded {len(self.current_rows)} poses")
 
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -206,12 +203,10 @@ class CsvPoseTester:
     # =====================================================
     def send_pose(self, pose):
         msg = f"{TOPIC_SERVO_CMD} {pose[0]} {pose[1]} {pose[2]} {pose[3]}"
-
         try:
             self.pub.send_string(msg)
             self._log(f"SEND -> {pose}")
-            self.status_var.set(f"Current pose: {pose}")
-
+            self._set_status(f"Current pose: {pose}")
         except Exception as e:
             self._log(f"ERROR: {e}")
 
@@ -220,16 +215,14 @@ class CsvPoseTester:
     # =====================================================
     def test_selected_pose(self):
         selected = self.tree.selection()
-
         if not selected:
             messagebox.showwarning("Warning", "Please select a pose")
             return
 
-        item = self.tree.item(selected[0])
+        item   = self.tree.item(selected[0])
         values = item["values"]
-
-        pose = values[1:5]
-
+        # values[0] คือ index, values[1:5] คือ S1, S2, S3, S4
+        pose   = values[1:5]
         self.send_pose(pose)
 
     # =====================================================
@@ -238,18 +231,15 @@ class CsvPoseTester:
     def play_all(self):
         if self.running:
             return
-
         if not self.current_rows:
             messagebox.showwarning("Warning", "No pose data")
             return
 
         self.running = True
-
         threading.Thread(target=self._play_worker, daemon=True).start()
 
     def _play_worker(self):
         delay = float(self.delay_var.get())
-
         self._log("PLAY ALL started")
 
         for idx, pose in enumerate(self.current_rows, start=1):
@@ -257,22 +247,14 @@ class CsvPoseTester:
                 self._log("PLAY ALL stopped")
                 return
 
-            self.root.after(
-                0,
-                lambda i=idx: self.status_var.set(f"Playing pose {i}")
-            )
-
+            # ส่งคำสั่ง update UI กลับไปทำบน main thread
+            self.root.after(0, lambda i=idx: self._set_status(f"Playing pose {i}"))
             self.root.after(0, lambda p=pose: self.send_pose(p))
 
             time.sleep(delay)
 
         self.running = False
-
-        self.root.after(
-            0,
-            lambda: self.status_var.set("PLAY ALL finished")
-        )
-
+        self.root.after(0, lambda: self._set_status("PLAY ALL finished"))
         self._log("PLAY ALL finished")
 
     # =====================================================
@@ -280,7 +262,7 @@ class CsvPoseTester:
     # =====================================================
     def stop_playback(self):
         self.running = False
-        self.status_var.set("Stopped")
+        self._set_status("Stopped")
         self._log("STOP pressed")
 
     # =====================================================
@@ -288,11 +270,10 @@ class CsvPoseTester:
     # =====================================================
     def _log(self, text):
         timestamp = time.strftime("%H:%M:%S")
-        line = f"[{timestamp}] {text}\n"
-
+        line      = f"[{timestamp}] {text}\n"
         print(line, end="")
-
         self.log.insert("end", line)
+        # see("end") ทำให้ log เลื่อนลงอัตโนมัติเมื่อมีบรรทัดใหม่
         self.log.see("end")
 
     # =====================================================
@@ -300,9 +281,8 @@ class CsvPoseTester:
     # =====================================================
     def shutdown(self):
         self.running = False
-
         try:
-            self.pub.close(0)
+            self.pub.close(0)   # 0 = linger: ปิด socket ทันที ไม่รอ message ค้าง
         except Exception:
             pass
 

@@ -1,4 +1,4 @@
-﻿"""Node 1 — Vision Node.
+"""Node 1 — Vision Node.
 
 Real-time YOLOv8 preview, but only PUBLISHES a color result when explicitly
 asked (via vision_cmd "capture"), or when the user clicks the local Test
@@ -41,20 +41,19 @@ class VisionNode:
         root.title("Camera Node — YOLOv8")
         root.geometry("560x540")
 
-
-        self.model = YOLO(MODEL_PATH)
-        self.cap = None
-        self.cam_idx = DEFAULT_CAMERA_INDEX
+        self.model      = YOLO(MODEL_PATH)
+        self.cap        = None
+        self.cam_idx    = DEFAULT_CAMERA_INDEX
         self.confidence = DEFAULT_CONFIDENCE
-        self.running = True
-        self.cap_lock = threading.Lock()
+        self.running    = True
+        self.cap_lock   = threading.Lock()
 
         # ZMQ
         self.ctx = zmq.Context.instance()
         self.sub = self.ctx.socket(zmq.SUB)
         self.sub.bind(ADDR_BIND.format(port=PORT_VISION_CMD))
         self.sub.setsockopt_string(zmq.SUBSCRIBE, TOPIC_VISION_CMD)
-        self.sub.RCVTIMEO = 100
+        self.sub.RCVTIMEO = 100   # timeout 100ms เพื่อให้ loop ออกได้เมื่อ running=False
 
         self.pub = self.ctx.socket(zmq.PUB)
         self.pub.bind(ADDR_BIND.format(port=PORT_VISION_RESULT))
@@ -74,7 +73,7 @@ class VisionNode:
         self.cam_var = tk.StringVar(value=str(self.cam_idx))
         # Keep ttk.Combobox for <<ComboboxSelected>> binding
         cam_dd = ttk.Combobox(top, textvariable=self.cam_var,
-                              values=[str(i) for i in range(0, 6)],
+                              values=["0", "1", "2", "3", "4", "5"],
                               width=3, state="readonly")
         cam_dd.pack(side="left", padx=3)
         cam_dd.bind("<<ComboboxSelected>>",
@@ -99,23 +98,13 @@ class VisionNode:
         self.lbl_video = tk.Label(video_frame, width=400, height=300)
         self.lbl_video.pack()
 
-        # status_var — StringVar with trace so _publish_result's .set() works unchanged
-        self.status_var = tk.StringVar(value="Detected color: —")
-        self.lbl_status = ctk.CTkLabel(self.root, text=self.status_var.get(),
+        self.lbl_status = ctk.CTkLabel(self.root, text="Detected color: —",
                                        font=("Tahoma", 22, "bold"))
         self.lbl_status.pack(pady=2)
-        self.status_var.trace_add("write",
-                                  lambda *_: self.lbl_status.configure(
-                                      text=self.status_var.get()))
 
-        # last_var — StringVar with trace so _update_frame's .set() works unchanged
-        self.last_var = tk.StringVar(value="Live: scanning…")
-        self.lbl_last = ctk.CTkLabel(self.root, text=self.last_var.get(),
+        self.lbl_last = ctk.CTkLabel(self.root, text="Live: scanning…",
                                      font=("Tahoma", 18))
         self.lbl_last.pack()
-        self.last_var.trace_add("write",
-                                lambda *_: self.lbl_last.configure(
-                                    text=self.last_var.get()))
 
         info = (f"SUB :{PORT_VISION_CMD} ({TOPIC_VISION_CMD})   "
                 f"PUB :{PORT_VISION_RESULT} ({TOPIC_VISION_RESULT})")
@@ -125,12 +114,23 @@ class VisionNode:
     def _on_conf(self, _val):
         self.confidence = float(self.conf_var.get())
 
+    # ---------------- UI helpers ----------------
+    def _set_status(self, text: str):
+        """อัปเดต status label — thread-safe (ส่งคำสั่งไป main thread)"""
+        self.root.after(0, lambda: self.lbl_status.configure(text=text))
+
+    def _set_live(self, text: str):
+        """อัปเดต live detection label — เรียกจาก main thread เท่านั้น"""
+        self.lbl_last.configure(text=text)
+
     # ---------------- Camera ----------------
     def _open_camera(self, idx: int):
         with self.cap_lock:
             if self.cap is not None:
-                try: self.cap.release()
-                except Exception: pass
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
             self.cap = cv2.VideoCapture(idx)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -145,71 +145,96 @@ class VisionNode:
 
     # ---------------- Live preview ----------------
     def _update_frame(self):
+        """อัปเดต video frame และ detection ทุก 20ms — เรียกตัวเองซ้ำผ่าน after()"""
         if not self.running:
             return
+
         ret, frame = self._read_frame()
         live_label = "Live: (no camera)"
+
         if ret:
-            results = self.model(frame, verbose=False)[0]
+            results    = self.model(frame, verbose=False)[0]
             best_label = None
-            best_conf = 0.0
+            best_conf  = 0.0
+
             for box in results.boxes:
                 conf = float(box.conf[0])
                 if conf >= self.confidence:
                     cls_id = int(box.cls[0])
-                    label = self.model.names[cls_id].lower()
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    label  = self.model.names[cls_id].lower()
+
+                    # วาด bounding box และ label บน frame
+                    coords          = box.xyxy[0]
+                    x1, y1, x2, y2 = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
                     cv2.putText(frame, f"{label} {conf:.2f}",
                                 (x1, max(y1 - 8, 12)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                    if conf > best_conf and label in COLORS:
-                        best_conf = conf
+
+                    if label in COLORS and conf > best_conf:
+                        best_conf  = conf
                         best_label = label
-            live_label = (f"Live: {best_label} ({best_conf:.2f})"
-                          if best_label else "Live: no color above threshold")
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            if best_label:
+                live_label = f"Live: {best_label} ({best_conf:.2f})"
+            else:
+                live_label = "Live: no color above threshold"
+
+            img   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             imgtk = ImageTk.PhotoImage(image=Image.fromarray(img).resize((400, 300)))
+
+            # ต้องเก็บ reference ไว้ใน self ไม่งั้น Python จะลบ image ออกจาก memory
+            # ก่อนที่ Tkinter จะแสดงผล ทำให้ภาพหายไป
             self.lbl_video.imgtk = imgtk
             self.lbl_video.configure(image=imgtk)
-        self.last_var.set(live_label)
+
+        self._set_live(live_label)
+        # เรียกตัวเองอีกครั้งใน 20ms เพื่อให้ได้ประมาณ 50fps
         self.root.after(20, self._update_frame)
 
     # ---------------- Capture-on-request ----------------
-    def _capture_and_vote(self, n_frames: int = 8, gap_s: float = 0.05) -> str | None:
+    def _capture_and_vote(self, n_frames: int = 8, gap_s: float = 0.05):
+        """เก็บ n_frames frames ห่างกัน gap_s วินาที (รวม ~0.4 วินาที)
+        แล้วเลือกสีที่ได้รับการโหวตมากที่สุด"""
         votes = []
         for _ in range(n_frames):
             ret, frame = self._read_frame()
             if not ret:
                 continue
-            results = self.model(frame, verbose=False)[0]
+            results    = self.model(frame, verbose=False)[0]
             best_label = None
-            best_conf = 0.0
+            best_conf  = 0.0
+
             for box in results.boxes:
                 conf = float(box.conf[0])
                 if conf >= self.confidence:
                     cls_id = int(box.cls[0])
-                    label = self.model.names[cls_id].lower()
+                    label  = self.model.names[cls_id].lower()
                     if label in COLORS and conf > best_conf:
-                        best_conf = conf
+                        best_conf  = conf
                         best_label = label
+
             if best_label:
                 votes.append(best_label)
             time.sleep(gap_s)
+
         if not votes:
             return None
-        winner, _ = Counter(votes).most_common(1)[0]
+
+        # หาสีที่พบมากที่สุดจากการโหวต
+        top_results = Counter(votes).most_common(1)
+        winner      = top_results[0][0]
         print(f"[vision] vote {dict(Counter(votes))} -> {winner}")
         return winner
 
-    def _publish_result(self, color: str | None):
+    def _publish_result(self, color):
+        """ส่งผลสีที่ตรวจพบผ่าน ZMQ และอัปเดต status label"""
         result = color if color else "none"
         try:
             self.pub.send_string(f"{TOPIC_VISION_RESULT} {result}")
         except Exception as e:
             print(f"[vision] pub err: {e}")
-        self.root.after(0, lambda c=result:
-                        self.status_var.set(f"Detected color: {c}"))
+        self._set_status(f"Detected color: {result}")
 
     # ---------------- ZMQ + manual ----------------
     def _zmq_loop(self):
@@ -226,19 +251,28 @@ class VisionNode:
                 self._publish_result(color)
 
     def _manual_capture(self):
-        threading.Thread(target=lambda: self._publish_result(self._capture_and_vote()),
-                         daemon=True).start()
+        """กดปุ่ม Test Capture — รัน capture ใน background thread"""
+        def do_capture():
+            color = self._capture_and_vote()
+            self._publish_result(color)
+
+        t = threading.Thread(target=do_capture, daemon=True)
+        t.start()
 
     # ---------------- Lifecycle ----------------
     def shutdown(self):
         self.running = False
         try:
             with self.cap_lock:
-                if self.cap: self.cap.release()
-        except Exception: pass
+                if self.cap:
+                    self.cap.release()
+        except Exception:
+            pass
         for s in (self.sub, self.pub):
-            try: s.close(0)
-            except Exception: pass
+            try:
+                s.close(0)  # 0 = linger: ปิด socket ทันที ไม่รอ message ค้าง
+            except Exception:
+                pass
 
 
 def main():

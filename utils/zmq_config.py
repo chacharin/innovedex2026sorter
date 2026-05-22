@@ -37,24 +37,38 @@ CMD_STOP    = "stop"
 CMD_HOME    = "home"
 
 # --- Robot defaults ---
-HOME_POSE = [90, 90, 90, 50]                 # degrees per axis (s8, s9, s10, s11)
-SERVO_PINS = [8, 9, 10, 11]                  # Arduino digital pins
-SERVO_LIMITS = [(0, 180), (0, 180), (0, 180), (30, 75)]  # (min, max) per axis
+# ตำแหน่ง home ของแต่ละ servo (องศา): S1, S2, S3, S4
+HOME_POSE  = [90, 90, 90, 50]
+SERVO_PINS = [8, 9, 10, 11]    # Arduino digital pins
+
+# (min, max) องศาต่อ servo
+# S4 มี range พิเศษ (30-75) เพราะเป็น gripper ที่หมุนได้น้อยกว่าข้อต่ออื่น
+SERVO_LIMITS = [(0, 180), (0, 180), (0, 180), (40, 85)]
 
 # --- Vision ---
-COLORS = ["red", "blue", "green", "yellow"]
+COLORS               = ["red", "blue", "green", "yellow"]
 DEFAULT_CAMERA_INDEX = 1
-DEFAULT_CONFIDENCE = 0.75
+DEFAULT_CONFIDENCE   = 0.75
 
 # --- Sweep tuning ---
-SWEEP_STEP_DEG  = 1.0
-SWEEP_TICK_SEC  = 0.02
+# servo เคลื่อนทีละ SWEEP_STEP_DEG องศา ทุก SWEEP_TICK_SEC วินาที
+# = ความเร็วสูงสุดประมาณ 50 องศา/วินาที
+SWEEP_STEP_DEG = 1.0
+SWEEP_TICK_SEC = 0.02
 
 # --- Data dir ---
 DATA_DIR = "./data"
 
-# --- Recordable file numbers ---
-RECORD_OPTIONS = (
-    [str(n) for n in range(1, 6)] +
-    [f"{a}{b}" for a in range(1, 6) for b in range(1, 5)]
-)
+# --- ชื่อไฟล์ที่บันทึกได้ ---
+# route หลัก: "1" ถึง "5"
+main_routes  = [str(n) for n in range(1, 6)]
+
+# branch ตามสี: "11","12","13","14", "21","22",...,"54"
+# รูปแบบ: (route)(color_index)  โดย 1=red, 2=blue, 3=green, 4=yellow
+branch_files = [
+    f"{route}{color_idx}"
+    for route in range(1, 6)
+    for color_idx in range(1, 5)
+]
+
+RECORD_OPTIONS = main_routes + branch_files

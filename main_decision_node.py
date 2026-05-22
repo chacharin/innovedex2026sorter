@@ -1,4 +1,4 @@
-﻿"""Node 5 — Main Decision (Brain).
+"""Node 5 — Main Decision (Brain).
 
 Integrates the CSV Player as a service thread.  State machine:
 
@@ -32,7 +32,6 @@ import csv
 import os
 import threading
 import time
-import tkinter as tk
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -49,23 +48,21 @@ from utils.zmq_config import (
 )
 
 
-# Per-button result codes used by _run_one
+# ผลลัพธ์ที่เป็นไปได้จาก _run_one()
 RES_DONE    = "DONE"
 RES_SKIPPED = "SKIPPED"
 RES_ABORTED = "ABORTED"
 RES_ERROR   = "ERROR"
 
 
-# Branching map: button N -> main file, then color -> branch file
+# ตาราง branching: button N -> ไฟล์ main, แล้ว color -> ไฟล์ branch
+# key = หมายเลขปุ่ม (1-5), value = dict ของชื่อไฟล์ CSV ตาม route และสี
 BRANCH = {
-    n: {
-        "main":   f"record-{n}.csv",
-        "red":    f"record-{n}1.csv",
-        "blue":   f"record-{n}2.csv",
-        "green":  f"record-{n}3.csv",
-        "yellow": f"record-{n}4.csv",
-    }
-    for n in range(1, 6)
+    1: {"main": "record-1.csv", "red": "record-11.csv", "blue": "record-12.csv", "green": "record-13.csv", "yellow": "record-14.csv"},
+    2: {"main": "record-2.csv", "red": "record-21.csv", "blue": "record-22.csv", "green": "record-23.csv", "yellow": "record-24.csv"},
+    3: {"main": "record-3.csv", "red": "record-31.csv", "blue": "record-32.csv", "green": "record-33.csv", "yellow": "record-34.csv"},
+    4: {"main": "record-4.csv", "red": "record-41.csv", "blue": "record-42.csv", "green": "record-43.csv", "yellow": "record-44.csv"},
+    5: {"main": "record-5.csv", "red": "record-51.csv", "blue": "record-52.csv", "green": "record-53.csv", "yellow": "record-54.csv"},
 }
 
 
@@ -74,7 +71,6 @@ class Brain:
         self.root = root
         root.title("Main Decision — The Sorter")
         root.geometry("780x820")
-
 
         # ZMQ ----------------------------------------------------------
         self.ctx = zmq.Context.instance()
@@ -101,14 +97,30 @@ class Brain:
         self.color_event  = threading.Event()
         self.running      = True
         self.busy         = False
+        # abort_flag ใช้ interrupt sequence กลางคัน เช่น กด STOP หรือ ALL RUN ถูก abort
         self.abort_flag   = threading.Event()
 
         self._build_ui()
 
         threading.Thread(target=self._status_loop, daemon=True).start()
-        threading.Thread(target=self._vision_loop, daemon=True).start()
+        threading.Thread(target=self._vision_loop,  daemon=True).start()
 
         self.root.after(400, lambda: self._log("Brain online. Waiting for commands."))
+
+    # ===================================================================
+    # UI helpers
+    # ===================================================================
+    def _set_state(self, s: str):
+        """อัปเดต state label — thread-safe (ส่งคำสั่งไป main thread)"""
+        self.root.after(0, lambda: self.lbl_state.configure(text=s))
+
+    def _set_servo_text(self, text: str):
+        """อัปเดต servo status label — thread-safe"""
+        self.root.after(0, lambda: self.lbl_servo.configure(text=text))
+
+    def _set_color_text(self, text: str):
+        """อัปเดต color label — thread-safe"""
+        self.root.after(0, lambda: self.lbl_color.configure(text=text))
 
     # ===================================================================
     # UI
@@ -126,19 +138,19 @@ class Brain:
 
         ctk.CTkLabel(ctrl, text="Pose delay (s):",
                      font=("Tahoma", 16)).grid(row=1, column=0, padx=2, sticky="e")
-        self.delay_var = tk.DoubleVar(value=2.0)
+        self.delay_var = ctk.DoubleVar(value=2.0)
         ctk.CTkEntry(ctrl, textvariable=self.delay_var, width=50,
                      font=("Tahoma", 16)).grid(row=1, column=1)
 
         ctk.CTkLabel(ctrl, text="IDLE timeout (s):",
                      font=("Tahoma", 16)).grid(row=1, column=2, padx=4, sticky="e")
-        self.idle_to = tk.DoubleVar(value=20.0)
+        self.idle_to = ctk.DoubleVar(value=20.0)
         ctk.CTkEntry(ctrl, textvariable=self.idle_to, width=50,
                      font=("Tahoma", 16)).grid(row=1, column=3)
 
         ctk.CTkLabel(ctrl, text="Vision timeout (s):",
                      font=("Tahoma", 16)).grid(row=1, column=4, padx=4, sticky="e")
-        self.vis_to = tk.DoubleVar(value=5.0)
+        self.vis_to = ctk.DoubleVar(value=5.0)
         ctk.CTkEntry(ctrl, textvariable=self.vis_to, width=50,
                      font=("Tahoma", 16)).grid(row=1, column=5, pady=(0, 6))
 
@@ -147,6 +159,7 @@ class Brain:
         btn_frame.pack(pady=6)
         self.buttons = []
         for n in range(1, 6):
+            # n=n จำเป็นเพื่อให้แต่ละปุ่มจำหมายเลข route ของตัวเอง
             b = ctk.CTkButton(btn_frame, text=f"Route {n}",
                               width=90, height=50,
                               font=("Tahoma", 18, "bold"),
@@ -177,30 +190,17 @@ class Brain:
 
         ctk.CTkLabel(stat, text="Status", font=("Tahoma", 16, "bold")).pack(anchor="w", padx=6, pady=(4, 0))
 
-        # StringVars with trace so _status_loop/_vision_loop .set() calls work unchanged
-        self.state_var = tk.StringVar(value="Idle, ready")
-        self.lbl_state = ctk.CTkLabel(stat, text=self.state_var.get(),
+        self.lbl_state = ctk.CTkLabel(stat, text="Idle, ready",
                                       font=("Tahoma", 18, "bold"))
         self.lbl_state.pack(anchor="w", padx=6)
-        self.state_var.trace_add("write",
-                                 lambda *_: self.lbl_state.configure(
-                                     text=self.state_var.get()))
 
-        self.servo_var = tk.StringVar(value="Servo: IDLE")
-        self.lbl_servo = ctk.CTkLabel(stat, text=self.servo_var.get(),
+        self.lbl_servo = ctk.CTkLabel(stat, text="Servo: IDLE",
                                       font=("Tahoma", 18))
         self.lbl_servo.pack(anchor="w", padx=6)
-        self.servo_var.trace_add("write",
-                                 lambda *_: self.lbl_servo.configure(
-                                     text=self.servo_var.get()))
 
-        self.color_var = tk.StringVar(value="Color: --")
-        self.lbl_color = ctk.CTkLabel(stat, text=self.color_var.get(),
+        self.lbl_color = ctk.CTkLabel(stat, text="Color: --",
                                       font=("Tahoma", 18))
         self.lbl_color.pack(anchor="w", padx=6, pady=(0, 4))
-        self.color_var.trace_add("write",
-                                 lambda *_: self.lbl_color.configure(
-                                     text=self.color_var.get()))
 
         # Log -----------------------------------------------------------
         ctk.CTkLabel(self.root, text="Event log:",
@@ -223,8 +223,9 @@ class Brain:
             parts = msg.split()
             if len(parts) >= 2:
                 self.servo_status = parts[1]
+                # ส่งคำสั่ง update UI กลับไปทำบน main thread
                 self.root.after(0, lambda s=self.servo_status:
-                                self.servo_var.set(f"Servo: {s}"))
+                                self._set_servo_text(f"Servo: {s}"))
 
     def _vision_loop(self):
         while self.running:
@@ -237,24 +238,27 @@ class Brain:
             parts = msg.split()
             if len(parts) >= 2:
                 self.last_color = parts[1].lower()
+                # ส่งคำสั่ง update UI กลับไปทำบน main thread
                 self.root.after(0, lambda c=self.last_color:
-                                self.color_var.set(f"Color: {c}"))
+                                self._set_color_text(f"Color: {c}"))
                 self.color_event.set()
 
     # ===================================================================
     # Helpers
     # ===================================================================
     def _log(self, msg: str):
-        ts = time.strftime("%H:%M:%S")
+        ts   = time.strftime("%H:%M:%S")
         line = f"[{ts}] {msg}\n"
         print(line, end="")
+
+        # ต้องสร้าง nested function เพราะ after() ต้องการ callable ไม่มี argument
+        # และต้องการ capture ค่า line ณ เวลานี้
         def _append():
             self.log.insert("end", line)
+            # see("end") ทำให้ log เลื่อนลงอัตโนมัติเมื่อมีบรรทัดใหม่
             self.log.see("end")
-        self.root.after(0, _append)
 
-    def _set_state(self, s: str):
-        self.root.after(0, lambda: self.state_var.set(s))
+        self.root.after(0, _append)
 
     def _set_buttons(self, enabled: bool):
         state = "normal" if enabled else "disabled"
@@ -280,6 +284,7 @@ class Brain:
             messagebox.showwarning("Busy",
                 "A sequence is already running. Press STOP to abort first.")
             return
+
         def _wrap():
             self.busy = True
             self.abort_flag.clear()
@@ -289,6 +294,7 @@ class Brain:
             finally:
                 self.busy = False
                 self._set_buttons(True)
+
         threading.Thread(target=_wrap, daemon=True).start()
 
     def _start_all_run(self):
@@ -311,7 +317,7 @@ class Brain:
                     break
                 self._set_state(f"ALL RUN  ->  button {n}/5")
                 self._log(f"------ ALL RUN: starting button {n} ------")
-                res = self._run_one(n, allow_skip=True)
+                res        = self._run_one(n, allow_skip=True)
                 results[n] = res
                 self._log(f"   button {n} result = {res}")
                 if res == RES_ABORTED:
@@ -320,9 +326,9 @@ class Brain:
                 if res == RES_ERROR:
                     self._log(f"button {n} ERROR - stopping ALL RUN")
                     break
-                # RES_DONE or RES_SKIPPED -> continue to next button
+                # RES_DONE หรือ RES_SKIPPED -> ไปปุ่มถัดไป
 
-            # Final homing - only if not aborted by STOP (STOP already homes)
+            # Final homing — เฉพาะเมื่อไม่ได้ถูก abort (STOP จะ home อยู่แล้ว)
             if not self.abort_flag.is_set():
                 self._log("ALL RUN finished - going home")
                 self._set_state("ALL RUN - homing")
@@ -332,7 +338,12 @@ class Brain:
                     self._log(f"home pub err: {e}")
                 self._wait_idle()
 
-            summary = "  |  ".join(f"#{n}:{results.get(n, '--')}" for n in range(1, 6))
+            # สร้าง summary แสดงผลของแต่ละปุ่ม
+            parts = []
+            for n in range(1, 6):
+                parts.append(f"#{n}:{results.get(n, '--')}")
+            summary = "  |  ".join(parts)
+
             self._log(f"====== ALL RUN DONE  [{summary}] ======")
             self._set_state(f"ALL RUN DONE  [{summary}]")
         except Exception as e:
@@ -354,7 +365,7 @@ class Brain:
         self.color_event.clear()
         self.last_color = None
         try:
-            files = BRANCH[n]
+            files     = BRANCH[n]
             main_file = os.path.join(DATA_DIR, files["main"])
 
             self._set_state(f"PLAYING_MAIN  ({files['main']})")
@@ -378,10 +389,16 @@ class Brain:
                 return RES_ERROR
 
             self._set_state("WAITING_COLOR")
+            # got=True ถ้าได้รับสีก่อน timeout, False ถ้า timeout
             got = self.color_event.wait(timeout=float(self.vis_to.get()))
             if self.abort_flag.is_set():
                 return RES_ABORTED
-            color = (self.last_color or "").lower() if got else ""
+
+            # แปลงสีเป็น string ที่ใช้งานได้ (ถ้า timeout จะได้ "" แทน)
+            if got and self.last_color:
+                color = self.last_color.lower()
+            else:
+                color = ""
 
             if not got:
                 self._log(f"Vision timeout (button {n})" + (" - skipping" if allow_skip else ""))
@@ -418,8 +435,8 @@ class Brain:
             return RES_ERROR
 
     def _safe_skip(self) -> str:
-        """Send arm home and wait IDLE before returning SKIPPED, so the next
-        button starts from a known pose instead of mid-air."""
+        """ส่งแขนกลับ home และรอ IDLE ก่อน return SKIPPED
+        เพื่อให้ปุ่มถัดไปเริ่มจาก pose ที่รู้แน่นอน"""
         self._set_state("SKIPPING - homing before next")
         self._log("   going home before next button")
         try:
@@ -440,7 +457,7 @@ class Brain:
         with open(path) as f:
             reader = csv.reader(f)
             try:
-                next(reader)  # header
+                next(reader)  # ข้าม header row (Servo1, Servo2, Servo3, Servo4)
             except StopIteration:
                 self._log(f"Empty file: {os.path.basename(path)}")
                 return True
@@ -462,7 +479,15 @@ class Brain:
         return True
 
     def _wait_idle(self) -> bool:
+        """รอจนกว่า servo จะกลับสู่สถานะ IDLE
+
+        Phase 1: รอให้ servo เริ่ม BUSY ก่อน (สูงสุด 1.5 วินาที)
+                 เพื่อให้แน่ใจว่า servo ได้รับคำสั่งและเริ่มเคลื่อนแล้ว
+        Phase 2: รอให้ servo กลับมา IDLE (สูงสุด idle_timeout วินาที)
+        """
         timeout = float(self.idle_to.get())
+
+        # Phase 1 — รอให้ servo เริ่มขยับ (สูงสุด 1.5 วินาที)
         busy_deadline = time.time() + 1.5
         while time.time() < busy_deadline:
             if self.abort_flag.is_set():
@@ -470,6 +495,8 @@ class Brain:
             if self.servo_status == STATUS_BUSY:
                 break
             time.sleep(0.05)
+
+        # Phase 2 — รอให้ servo หยุดและกลับ IDLE
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.abort_flag.is_set():
@@ -477,6 +504,7 @@ class Brain:
             if self.servo_status == STATUS_IDLE:
                 return True
             time.sleep(0.05)
+
         self._log("IDLE timeout")
         self._set_state("ERROR - idle timeout")
         return False
@@ -485,8 +513,10 @@ class Brain:
         self.running = False
         for s in (self.cmd_pub, self.status_sub,
                   self.vision_pub, self.vision_sub):
-            try: s.close(0)
-            except Exception: pass
+            try:
+                s.close(0)  # 0 = linger: ปิด socket ทันที ไม่รอ message ค้าง
+            except Exception:
+                pass
 
 
 def main():

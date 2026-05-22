@@ -1,4 +1,4 @@
-﻿"""Node 3 — Teaching Node.
+"""Node 3 — Scale Node.
 
 4 sliders for manual jogging.  Every slider movement publishes a
 `servo_cmd <a1> <a2> <a3> <a4>` message → the hardware_node sweeps to that
@@ -39,7 +39,8 @@ class TeachingNode:
         self.pub = self.ctx.socket(zmq.PUB)
         self.pub.connect(ADDR_CONN.format(port=PORT_SERVO_CMD))
 
-        self.scales = []
+        self.scales   = []
+        self.val_lbls = []
         self._build_ui()
 
     # ---------------- UI ----------------
@@ -55,21 +56,21 @@ class TeachingNode:
             ctk.CTkLabel(f, text=f"S{i+1}  pin {SERVO_PINS[i]}  [{lo}–{hi}]",
                          font=("Tahoma", 16)).pack(side="left", padx=(6, 2))
 
-            # Per-slider value label updated by the slider command
-            val_lbl = ctk.CTkLabel(f, text=f"{HOME_POSE[i]}",
+            # Label แสดงค่าปัจจุบันของ slider (อยู่ขวาสุด)
+            val_lbl = ctk.CTkLabel(f, text=str(HOME_POSE[i]),
                                    width=36, font=("Consolas", 18, "bold"))
             val_lbl.pack(side="right", padx=(0, 6))
 
+            # lbl=val_lbl จำเป็นเพื่อให้ lambda จำ label ของตัวเองไว้ใน loop
+            # (Python closure capture — ถ้าไม่ทำ ทุก slider จะชี้ไป label เดียวกัน)
             sc = ctk.CTkSlider(f, from_=lo, to=hi,
                                number_of_steps=hi - lo,
                                width=220,
-                               command=lambda v, lbl=val_lbl: (
-                                   lbl.configure(text=f"{int(float(v))}"),
-                                   self._publish()
-                               ))
+                               command=lambda v, lbl=val_lbl: self._on_slider_moved(v, lbl))
             sc.set(HOME_POSE[i])
             sc.pack(side="left", padx=4, pady=4)
 
+            # i=i และ d=delta จำเป็นเพื่อให้แต่ละปุ่มจำ axis และ delta ของตัวเอง
             for txt, delta in [("-1", -1), ("+1", 1), ("-10", -10), ("+10", 10)]:
                 ctk.CTkButton(f, text=txt, width=36,
                               font=("Tahoma", 16),
@@ -77,18 +78,20 @@ class TeachingNode:
                               ).pack(side="left", padx=1)
 
             self.scales.append(sc)
+            self.val_lbls.append(val_lbl)
 
         # File select
         sel = ctk.CTkFrame(self.root, fg_color="transparent")
         sel.pack(pady=5)
         ctk.CTkLabel(sel, text="File: record-", font=("Tahoma", 18)).grid(row=0, column=0)
         self.file_var = tk.StringVar(value=RECORD_OPTIONS[0])
-        # Keep ttk.Combobox for clean width control; file_var trace drives preview
+        # Keep ttk.Combobox for clean width control
         ttk.Combobox(sel, textvariable=self.file_var,
                      values=RECORD_OPTIONS, width=5,
                      state="readonly").grid(row=0, column=1)
         ctk.CTkLabel(sel, text=".csv", font=("Tahoma", 18)).grid(row=0, column=2)
-        self.file_var.trace_add("write", lambda *a: self._load_preview())
+        # โหลด preview ใหม่ทุกครั้งที่เลือกไฟล์
+        self.file_var.trace_add("write", lambda *_: self._load_preview())
 
         # Action buttons
         btns = ctk.CTkFrame(self.root, fg_color="transparent")
@@ -103,16 +106,12 @@ class TeachingNode:
                       font=("Tahoma", 18, "bold"),
                       command=self._clear).grid(row=0, column=2, padx=3)
 
-        # status StringVar — trace so _publish(), _record(), _clear() .set() works unchanged
-        self.status = tk.StringVar(value="Idle")
-        self.status_lbl = ctk.CTkLabel(self.root, text=self.status.get(),
+        # Status label
+        self.status_lbl = ctk.CTkLabel(self.root, text="Idle",
                                        font=("Tahoma", 18))
         self.status_lbl.pack(pady=2)
-        self.status.trace_add("write",
-                              lambda *_: self.status_lbl.configure(
-                                  text=self.status.get()))
 
-        # Preview (CTkTextbox replaces tk.Text)
+        # Preview
         ctk.CTkLabel(self.root, text="File preview:",
                      font=("Tahoma", 18, "bold")).pack(anchor="w", padx=10)
         self.preview = ctk.CTkTextbox(self.root, height=120, width=440,
@@ -127,40 +126,65 @@ class TeachingNode:
         self._load_preview()
 
     # ---------------- Helpers ----------------
+    def _set_status(self, text: str):
+        """อัปเดต status label ด้วยข้อความที่กำหนด"""
+        self.status_lbl.configure(text=text)
+
+    def _on_slider_moved(self, value, label):
+        """เรียกเมื่อผู้ใช้ drag slider — อัปเดต label และส่งคำสั่งไปยัง servo"""
+        label.configure(text=str(int(value)))
+        self._publish()
+
     def _nudge(self, i, delta):
-        self.scales[i].set(self.scales[i].get() + delta)
-        # CTkSlider fires command on .set(), so _publish is triggered automatically.
+        """ขยับ servo แกน i ไปอีก delta องศา (จำกัดอยู่ใน SERVO_LIMITS)"""
+        lo, hi  = SERVO_LIMITS[i]
+        # max(lo, min(hi, ...)) จำกัดค่าไม่ให้เกิน limit: lo <= value <= hi
+        new_val = max(lo, min(hi, self.scales[i].get() + delta))
+        self.scales[i].set(new_val)
+        self.val_lbls[i].configure(text=str(int(new_val)))
+        self._publish()
 
     def _publish(self):
-        vals = [self.scales[i].get() for i in range(4)]
+        """ส่ง servo position ปัจจุบันทั้ง 4 แกน ผ่าน ZMQ ไปยัง arduino_node"""
+        vals = []
+        for i in range(4):
+            vals.append(self.scales[i].get())
         msg = f"{TOPIC_SERVO_CMD} {vals[0]} {vals[1]} {vals[2]} {vals[3]}"
         try:
             self.pub.send_string(msg)
         except Exception as e:
             print(f"[teach] pub err: {e}")
-        self.status.set(f"Sent → {vals}")
+        self._set_status(f"Sent → {vals}")
 
     def _home(self):
+        """ส่ง servo ทุกตัวกลับตำแหน่ง HOME และอัปเดต UI"""
         for i in range(4):
             self.scales[i].set(HOME_POSE[i])
+            # CTkSlider.set() ไม่ fire command callback → ต้องอัปเดต label เอง
+            self.val_lbls[i].configure(text=str(HOME_POSE[i]))
         self._publish()
 
     def _path(self):
+        """คืน path ของไฟล์ CSV ที่เลือกอยู่ตอนนี้"""
         return os.path.join(DATA_DIR, f"record-{self.file_var.get()}.csv")
 
     def _record(self):
-        vals = [self.scales[i].get() for i in range(4)]
-        path = self._path()
-        new = not os.path.isfile(path)
+        """บันทึก pose ปัจจุบันต่อท้ายไฟล์ CSV ที่เลือกไว้"""
+        vals = []
+        for i in range(4):
+            vals.append(self.scales[i].get())
+        path        = self._path()
+        is_new_file = not os.path.isfile(path)
         with open(path, 'a', newline='') as f:
-            w = csv.writer(f)
-            if new:
-                w.writerow(["Servo1", "Servo2", "Servo3", "Servo4"])
-            w.writerow(vals)
-        self.status.set(f"Recorded {vals} → {os.path.basename(path)}")
+            writer = csv.writer(f)
+            if is_new_file:
+                writer.writerow(["Servo1", "Servo2", "Servo3", "Servo4"])
+            writer.writerow(vals)
+        self._set_status(f"Recorded {vals} → {os.path.basename(path)}")
         self._load_preview()
 
     def _clear(self):
+        """ล้างไฟล์ CSV ที่เลือก (เหลือแค่ header row)"""
         path = self._path()
         if not messagebox.askyesno("Confirm",
                                    f"Clear {os.path.basename(path)}?\n"
@@ -168,10 +192,11 @@ class TeachingNode:
             return
         with open(path, 'w', newline='') as f:
             csv.writer(f).writerow(["Servo1", "Servo2", "Servo3", "Servo4"])
-        self.status.set(f"Cleared {os.path.basename(path)}")
+        self._set_status(f"Cleared {os.path.basename(path)}")
         self._load_preview()
 
     def _load_preview(self):
+        """โหลดและแสดงเนื้อหาไฟล์ CSV ที่เลือกในกล่อง preview"""
         path = self._path()
         self.preview.configure(state="normal")
         self.preview.delete(1.0, "end")
@@ -185,8 +210,10 @@ class TeachingNode:
 
     # ---------------- Lifecycle ----------------
     def shutdown(self):
-        try: self.pub.close(0)
-        except Exception: pass
+        try:
+            self.pub.close(0)   # 0 = linger: ปิด socket ทันที ไม่รอ message ค้าง
+        except Exception:
+            pass
 
 
 def main():

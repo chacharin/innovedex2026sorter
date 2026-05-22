@@ -1,4 +1,4 @@
-﻿"""Node 2 — Hardware Node.
+"""Node 2 — Hardware Node.
 
 Subscribes to `servo_cmd` (SUB binds on PORT_SERVO_CMD) so multiple publishers
 (teaching_node, main.py) can connect in.
@@ -43,26 +43,30 @@ class HardwareNode:
         self.root = root
         root.title("Arduino Node — Servo Driver")
         root.geometry("480x620")
-
         root.resizable(False, False)
 
-        # Robot state
-        self.current = [float(a) for a in HOME_POSE]
-        self.target  = [float(a) for a in HOME_POSE]
+        # สถานะ servo ปัจจุบัน (องศา) — เริ่มต้นที่ HOME_POSE
+        self.current = []
+        self.target  = []
+        for a in HOME_POSE:
+            self.current.append(float(a))
+            self.target.append(float(a))
+
+        # target_lock ป้องกัน 2 threads แก้ target พร้อมกัน (thread-safe)
         self.target_lock = threading.Lock()
         self.last_status = None
-        self.connected = False
-        self.board = None
-        self.servos = []
-        self.running = True
-        self.emergency = False  # set when STOP command received
+        self.connected   = False
+        self.board       = None
+        self.servos      = []
+        self.running     = True
+        self.emergency   = False   # set เมื่อรับคำสั่ง STOP
 
         # ZMQ
         self.ctx = zmq.Context.instance()
         self.sub = self.ctx.socket(zmq.SUB)
         self.sub.bind(ADDR_BIND.format(port=PORT_SERVO_CMD))
         self.sub.setsockopt_string(zmq.SUBSCRIBE, TOPIC_SERVO_CMD)
-        self.sub.RCVTIMEO = 100  # ms
+        self.sub.RCVTIMEO = 100   # timeout 100ms เพื่อให้ loop ออกได้เมื่อ running=False
 
         self.pub = self.ctx.socket(zmq.PUB)
         self.pub.bind(ADDR_BIND.format(port=PORT_SERVO_STATUS))
@@ -72,7 +76,7 @@ class HardwareNode:
 
         threading.Thread(target=self._zmq_loop,   daemon=True).start()
         threading.Thread(target=self._sweep_loop, daemon=True).start()
-        # initial heartbeat so subscribers know we're up
+        # ส่ง heartbeat ครั้งแรกให้ subscriber รู้ว่า node นี้พร้อมแล้ว
         self.root.after(300, lambda: self._publish_status(STATUS_IDLE))
 
     # ---------------- UI ----------------
@@ -88,9 +92,10 @@ class HardwareNode:
                                        font=("Tahoma", 18, "bold"))
         self.lbl_status.pack(side="right")
 
-        self.bars = []
-        self.lbls = []
+        self.bars     = []
+        self.lbls     = []
         self.tgt_lbls = []
+
         for i in range(4):
             lo, hi = SERVO_LIMITS[i]
             f = ctk.CTkFrame(self.root, corner_radius=6)
@@ -117,6 +122,17 @@ class HardwareNode:
                                 font=("Consolas", 18, "bold"))
             tlbl.grid(row=2, column=3, sticky="w", pady=(0, 4))
 
+            # ปุ่ม nudge: กดเพื่อขยับ target ทีละ 1 หรือ 10 องศา
+            # ax=i และ d=delta จำเป็นเพื่อให้แต่ละปุ่มจำ axis และ delta ของตัวเอง
+            nudge_row = ctk.CTkFrame(f, fg_color="transparent")
+            nudge_row.grid(row=3, column=0, columnspan=4, pady=(0, 4))
+            for label, delta in [("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)]:
+                ctk.CTkButton(
+                    nudge_row, text=label, width=52, height=28,
+                    font=("Tahoma", 15, "bold"),
+                    command=lambda ax=i, d=delta: self._nudge(ax, d)
+                ).pack(side="left", padx=2)
+
             self.bars.append(bar)
             self.lbls.append(lbl)
             self.tgt_lbls.append(tlbl)
@@ -126,7 +142,6 @@ class HardwareNode:
         ctk.CTkLabel(self.root, text=info,
                      font=("Consolas", 14)).pack(pady=2)
 
-        # log label — dynamic via configure
         self.log_lbl = ctk.CTkLabel(self.root, text="Initialising…",
                                     wraplength=360, justify="left",
                                     font=("Tahoma", 16))
@@ -138,8 +153,8 @@ class HardwareNode:
             self._log("pyfirmata2 not installed → DRY-RUN mode")
             return
         try:
-            port = pyfirmata2.Arduino.AUTODETECT
-            self.board = pyfirmata2.Arduino(port)
+            port        = pyfirmata2.Arduino.AUTODETECT
+            self.board  = pyfirmata2.Arduino(port)
             self.servos = [self.board.get_pin(f'd:{p}:s') for p in SERVO_PINS]
             for i, ang in enumerate(HOME_POSE):
                 self.servos[i].write(ang)
@@ -150,12 +165,23 @@ class HardwareNode:
             self.lbl_conn.configure(text="● Arduino: FAILED", text_color="#d63031")
             self._log(f"Arduino error: {e}\nRunning in DRY-RUN mode (no hardware).")
 
+    # ---------------- Nudge ----------------
+    def _nudge(self, axis: int, delta: float):
+        """ขยับ target ของ servo แกน axis ไปอีก delta องศา
+        max(lo, min(hi, ...)) จำกัดค่าไม่ให้เกิน limit: lo <= value <= hi"""
+        with self.target_lock:
+            lo, hi      = SERVO_LIMITS[axis]
+            new_t       = list(self.target)
+            new_t[axis] = max(lo, min(hi, new_t[axis] + delta))
+        self._set_target(new_t)
+
     # ---------------- Helpers ----------------
     def _log(self, msg: str):
         self.log_lbl.configure(text=msg)
         print(f"[hardware] {msg}")
 
     def _publish_status(self, status: str):
+        # ไม่ส่ง ZMQ ซ้ำถ้า status ไม่เปลี่ยน เพื่อลด noise บน network
         if status == self.last_status:
             return
         self.last_status = status
@@ -164,14 +190,17 @@ class HardwareNode:
         except Exception:
             pass
         color = "#2ecc71" if status == STATUS_IDLE else "#f39c12"
+        # ส่งคำสั่ง update UI กลับไปทำบน main thread
         self.root.after(0, lambda: self.lbl_status.configure(
             text=f"STATUS: {status}", text_color=color))
 
     def _set_target(self, new_target):
+        """อัปเดต target ทั้ง 4 แกน — thread-safe"""
         with self.target_lock:
             for i in range(4):
-                lo, hi = SERVO_LIMITS[i]
+                lo, hi         = SERVO_LIMITS[i]
                 self.target[i] = max(lo, min(hi, float(new_target[i])))
+        # ส่งคำสั่ง update UI กลับไปทำบน main thread
         self.root.after(0, self._refresh_targets)
 
     def _refresh_ui(self):
@@ -213,13 +242,19 @@ class HardwareNode:
 
     # ---------------- Sweep loop ----------------
     def _sweep_loop(self):
+        """เคลื่อน servo จาก current ไปหา target ทีละ SWEEP_STEP_DEG องศา
+        ทำงานใน background thread ตลอดเวลา"""
         step = SWEEP_STEP_DEG
         tick = SWEEP_TICK_SEC
+
         while self.running:
             with self.target_lock:
                 tgt = list(self.target)
 
-            moving = any(abs(self.current[i] - tgt[i]) > 0.5 for i in range(4))
+            # ถ้าต่างกันน้อยกว่า 0.5 องศา ถือว่าถึงเป้าแล้ว
+            diffs  = [abs(self.current[i] - tgt[i]) for i in range(4)]
+            moving = any(d > 0.5 for d in diffs)
+
             if moving:
                 self._publish_status(STATUS_BUSY)
                 for i in range(4):
@@ -228,27 +263,37 @@ class HardwareNode:
                         self.current[i] = tgt[i]
                     else:
                         self.current[i] += step if diff > 0 else -step
+
+                    # ถ้าไม่มี Arduino จะ skip การส่งคำสั่งจริง (dry-run mode)
                     if self.connected:
                         try:
                             self.servos[i].write(self.current[i])
                         except Exception:
                             pass
+
+                # ส่งคำสั่ง update UI กลับไปทำบน main thread
                 self.root.after(0, self._refresh_ui)
                 time.sleep(tick)
             else:
                 self._publish_status(STATUS_IDLE)
-                time.sleep(0.05)
+                time.sleep(0.05)   # รอ 50ms ก่อน check ใหม่เมื่อไม่มี movement
 
     # ---------------- Lifecycle ----------------
     def shutdown(self):
         self.running = False
-        try: self.pub.close(0)
-        except Exception: pass
-        try: self.sub.close(0)
-        except Exception: pass
+        try:
+            self.pub.close(0)   # 0 = linger: ปิด socket ทันที ไม่รอ message ค้าง
+        except Exception:
+            pass
+        try:
+            self.sub.close(0)
+        except Exception:
+            pass
         if self.board:
-            try: self.board.exit()
-            except Exception: pass
+            try:
+                self.board.exit()
+            except Exception:
+                pass
 
 
 def main():
