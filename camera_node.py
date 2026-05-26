@@ -13,6 +13,10 @@ ZMQ:
     PUB binds  PORT_VISION_RESULT  ("color_result <red|blue|green|yellow|none>")
 """
 
+import os
+# ข้ามการเช็ค update ของ ultralytics ตอน startup — ทำให้เปิดเร็วขึ้นและทำงาน offline ได้
+os.environ.setdefault("YOLO_OFFLINE", "True")
+
 import threading
 import time
 from collections import Counter
@@ -23,7 +27,7 @@ import customtkinter as ctk
 import cv2
 from PIL import Image, ImageTk
 import zmq
-from ultralytics import YOLO
+# ultralytics import แบบ lazy ใน _init_heavy เพื่อให้หน้าต่างโผล่ก่อน
 
 from utils.zmq_config import (
     PORT_VISION_CMD, PORT_VISION_RESULT,
@@ -41,14 +45,17 @@ class VisionNode:
         root.title("Camera Node — YOLOv8")
         root.geometry("560x540")
 
-        self.model      = YOLO(MODEL_PATH)
+        # ของหนัก — จะถูก initialize ใน background thread (_init_heavy)
+        self.model      = None
         self.cap        = None
         self.cam_idx    = DEFAULT_CAMERA_INDEX
         self.confidence = DEFAULT_CONFIDENCE
         self.running    = True
+        self.ready      = threading.Event()
         self.cap_lock   = threading.Lock()
 
-        # ZMQ
+        # ZMQ — bind ทันทีตั้งแต่หน้าต่างขึ้นมา เพื่อให้ node อื่นเชื่อมเข้ามาได้
+        # ทันที แม้ว่า YOLO ยังโหลดไม่เสร็จ
         self.ctx = zmq.Context.instance()
         self.sub = self.ctx.socket(zmq.SUB)
         self.sub.bind(ADDR_BIND.format(port=PORT_VISION_CMD))
@@ -58,11 +65,43 @@ class VisionNode:
         self.pub = self.ctx.socket(zmq.PUB)
         self.pub.bind(ADDR_BIND.format(port=PORT_VISION_RESULT))
 
-        self._build_ui()
-        self._open_camera(self.cam_idx)
+        self._build_ui()   # หน้าต่างโผล่ทันที
 
-        threading.Thread(target=self._zmq_loop, daemon=True).start()
+        # โหลด YOLO + เปิดกล้อง ใน background — main thread จะ free รันต่อ
+        threading.Thread(target=self._init_heavy, daemon=True).start()
+        threading.Thread(target=self._zmq_loop,   daemon=True).start()
+
+    # ---------------- Background warm-up ----------------
+    def _init_heavy(self):
+        """โหลด YOLO + เปิดกล้อง นอก main thread เพื่อให้หน้าต่างไม่ค้าง"""
+        self._set_status("Loading YOLO model...")
+        from ultralytics import YOLO   # lazy import — pulls in torch (~5-15s ครั้งแรก)
+        model = YOLO(MODEL_PATH)
+
+        self._set_status("Opening camera...")
+        cap = self._make_capture(self.cam_idx)
+
+        with self.cap_lock:
+            self.model = model
+            self.cap   = cap
+
+        self.ready.set()
+        self._set_status("Detected color: —")
+        # กลับ main thread เพื่อ enable controls และ start preview loop
+        self.root.after(0, self._on_ready)
+
+    def _on_ready(self):
+        self.cam_dd.configure(state="readonly")
+        self.btn_test.configure(state="normal")
         self._update_frame()
+
+    def _make_capture(self, idx: int):
+        # CAP_DSHOW (DirectShow) มักเปิดกล้อง USB เร็วกว่า Media Foundation
+        # backend ปกติ 2-3 เท่าบน Windows
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        return cap
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -72,12 +111,13 @@ class VisionNode:
         ctk.CTkLabel(top, text="Cam:", font=("Tahoma", 18)).pack(side="left")
         self.cam_var = tk.StringVar(value=str(self.cam_idx))
         # Keep ttk.Combobox for <<ComboboxSelected>> binding
-        cam_dd = ttk.Combobox(top, textvariable=self.cam_var,
-                              values=["0", "1", "2", "3", "4", "5"],
-                              width=3, state="readonly")
-        cam_dd.pack(side="left", padx=3)
-        cam_dd.bind("<<ComboboxSelected>>",
-                    lambda e: self._open_camera(int(self.cam_var.get())))
+        # disabled จนกว่า _init_heavy จะเสร็จ (กันสลับกล้องก่อน YOLO โหลดเสร็จ)
+        self.cam_dd = ttk.Combobox(top, textvariable=self.cam_var,
+                                   values=["0", "1", "2", "3", "4", "5"],
+                                   width=3, state="disabled")
+        self.cam_dd.pack(side="left", padx=3)
+        self.cam_dd.bind("<<ComboboxSelected>>",
+                         lambda e: self._open_camera(int(self.cam_var.get())))
 
         ctk.CTkLabel(top, text="  Conf:", font=("Tahoma", 18)).pack(side="left")
         self.conf_var = tk.DoubleVar(value=self.confidence)
@@ -88,9 +128,12 @@ class VisionNode:
                                     command=self._on_conf)
         conf_slider.pack(side="left", padx=3)
 
-        ctk.CTkButton(top, text="Test Capture", width=100,
-                      font=("Tahoma", 18, "bold"),
-                      command=self._manual_capture).pack(side="right", padx=4)
+        # disabled จนกว่า model จะพร้อม
+        self.btn_test = ctk.CTkButton(top, text="Test Capture", width=100,
+                                      font=("Tahoma", 18, "bold"),
+                                      state="disabled",
+                                      command=self._manual_capture)
+        self.btn_test.pack(side="right", padx=4)
 
         # Video label kept as tk.Label for ImageTk.PhotoImage compatibility
         video_frame = ctk.CTkFrame(self.root, corner_radius=4)
@@ -98,11 +141,12 @@ class VisionNode:
         self.lbl_video = tk.Label(video_frame, width=400, height=300)
         self.lbl_video.pack()
 
-        self.lbl_status = ctk.CTkLabel(self.root, text="Detected color: —",
+        # ขึ้น "Loading YOLO model..." ตอนแรก จะถูกอัปเดตใน _init_heavy
+        self.lbl_status = ctk.CTkLabel(self.root, text="Loading YOLO model...",
                                        font=("Tahoma", 22, "bold"))
         self.lbl_status.pack(pady=2)
 
-        self.lbl_last = ctk.CTkLabel(self.root, text="Live: scanning…",
+        self.lbl_last = ctk.CTkLabel(self.root, text="Live: starting up…",
                                      font=("Tahoma", 18))
         self.lbl_last.pack()
 
@@ -131,9 +175,7 @@ class VisionNode:
                     self.cap.release()
                 except Exception:
                     pass
-            self.cap = cv2.VideoCapture(idx)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap = self._make_capture(idx)
             self.cam_idx = idx
             print(f"[vision] camera switched to index {idx}")
 
@@ -146,7 +188,7 @@ class VisionNode:
     # ---------------- Live preview ----------------
     def _update_frame(self):
         """อัปเดต video frame และ detection ทุก 20ms — เรียกตัวเองซ้ำผ่าน after()"""
-        if not self.running:
+        if not self.running or self.model is None:
             return
 
         ret, frame = self._read_frame()
@@ -247,6 +289,12 @@ class VisionNode:
                 break
             parts = msg.split()
             if len(parts) >= 2 and parts[1] == CMD_CAPTURE:
+                if not self.ready.is_set():
+                    # capture ถูกร้องขอก่อน YOLO โหลดเสร็จ — ตอบกลับ "none" เพื่อไม่ให้
+                    # main_decision_node ค้างรอ
+                    print("[vision] capture requested before model is ready")
+                    self._publish_result(None)
+                    continue
                 color = self._capture_and_vote()
                 self._publish_result(color)
 
