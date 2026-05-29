@@ -243,42 +243,45 @@ ZeroMQ (ZMQ) คือ messaging library ที่ทำให้ process คุ
 
 ---
 
-### แผนภาพการเชื่อมต่อ
+### แผนภาพการเชื่อมต่อ (rqt_graph style)
+
+> **วิธีอ่าน (แบบเดียวกับ `rqt_graph` ใน ROS):**
+> - **1 กล่อง = 1 Node = 1 process** — แต่ละ Node ปรากฏในแผนภาพ "เพียงกล่องเดียว"
+>   (โดยเฉพาะ `main_decision_node` ที่เป็นโปรแกรมเดียวรับทั้งหน้าที่ส่งคำสั่งและรับผล
+>   ไม่ใช่ 2 โปรเซสแยกกัน)
+> - **ลูกศร `──topic @port──►`** = ทิศทางการไหลของข้อมูล (จากผู้ส่ง ไปยังผู้รับ)
+> - **BIND** = ฝั่งที่เปิด socket รอ (เปิดพอร์ตนั้นเอง) · **connect** = ฝั่งที่เชื่อมเข้าหา
 
 ```
-╔══════════════════════════════════════════════════════════════════════╗
-║                    ZMQ MESSAGE FLOW DIAGRAM                        ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                      ║
-║   ┌─────────────────┐                    ┌────────────────────────┐  ║
-║   │   scale_node    │──── servo_cmd ────►│                        │  ║
-║   │ (PUB, connect)  │    PORT: 5555      │     arduino_node       │  ║
-║   └─────────────────┘                    │   (SUB BIND :5555)     │  ║
-║                                          │                        │  ║
-║   ┌─────────────────┐                    │  ควบคุม Servo จริง     │  ║
-║   │ main_decision   │──── servo_cmd ────►│  บน Arduino            │  ║
-║   │ (PUB, connect)  │    PORT: 5555      │                        │  ║
-║   └────────┬────────┘                    │  (PUB BIND :5556)      │  ║
-║            │                             └────────────┬───────────┘  ║
-║            │◄──────────── servo_status ───────────────┘              ║
-║            │              PORT: 5556                                 ║
-║            │              "IDLE" / "BUSY"                            ║
-║            │                                                         ║
-║            │              vision_cmd                                 ║
-║            ├──────────────────────────────►┌────────────────────┐   ║
-║            │              PORT: 5557       │    camera_node     │   ║
-║            │              "capture"        │  (SUB BIND :5557)  │   ║
-║            │                              │                    │   ║
-║            │◄──────────── color_result ───┤  YOLO ตรวจจับสี   │   ║
-║            │              PORT: 5558       │  (PUB BIND :5558)  │   ║
-║            │              "red/blue/..."   └────────────────────┘   ║
-║            │                                                         ║
-║   ┌────────┴────────┐                                                ║
-║   │  main_decision  │  ← ตัดสินใจเลือก CSV branch ตามสีที่ได้        ║
-║   │  (SUB, connect) │                                                ║
-║   └─────────────────┘                                                ║
-╚══════════════════════════════════════════════════════════════════════╝
+        servo_cmd channel  (port 5555 — arduino_node เป็นผู้ BIND, ที่เหลือ connect เข้า)
+  ┌──────────────────┐
+  │    scale_node    │──┐
+  │  servo_cmd       │  │
+  │  PUB connect 5555│  │
+  └──────────────────┘  │
+  ┌──────────────────┐  │   servo_cmd @5555 (PUB connect)   ┌────────────────────────────┐
+  │  csv_pose_tester │──┼──────────────────────────────────►│        arduino_node         │
+  │  servo_cmd       │  │                                    │                             │
+  │  PUB connect 5555│  │                                    │  servo_cmd    : SUB BIND 5555│
+  └──────────────────┘  │                                    │  servo_status : PUB BIND 5556│
+  ┌──────────────────┐  │                                    └───────────────┬─────────────┘
+  │                  │──┘                                                     │
+  │ main_decision_   │◄──────────── servo_status @5556 (SUB connect) ─────────┘
+  │     node         │
+  │   (Brain)        │
+  │ ★ 1 process ★    │──────────── vision_cmd @5557 (PUB connect) ───────────┐
+  │                  │                                                        ▼
+  │ servo_cmd  →5555 │                                    ┌────────────────────────────┐
+  │ servo_status←5556│                                    │        camera_node          │
+  │ vision_cmd →5557 │                                    │                             │
+  │ color_res  ←5558 │◄──── color_result @5558 (PUB BIND)─│  vision_cmd   : SUB BIND 5557│
+  │ (ทุก socket      │           (camera BIND, brain conn)│  color_result : PUB BIND 5558│
+  │  เป็น connect)   │                                    └────────────────────────────┘
+  └──────────────────┘
 ```
+
+> `scale_node`, `csv_pose_tester`, และ `main_decision_node` ต่างก็ **PUB → connect** เข้าพอร์ต
+> 5555 พร้อมกันได้ เพราะ `arduino_node` เป็นผู้ **BIND** พอร์ตนั้นไว้ฝั่งเดียว (many-publishers → one-binder)
 
 ---
 
@@ -286,7 +289,7 @@ ZeroMQ (ZMQ) คือ messaging library ที่ทำให้ process คุ
 
 | Port | Channel | ผู้ BIND | ผู้ CONNECT | ข้อความตัวอย่าง |
 |---|---|---|---|---|
-| **5555** | `servo_cmd` | arduino_node | scale_node, main_decision | `servo_cmd 90 45 120 50` |
+| **5555** | `servo_cmd` | arduino_node | scale_node, csv_pose_tester, main_decision | `servo_cmd 90 45 120 50` |
 | **5556** | `servo_status` | arduino_node | main_decision | `servo_status IDLE` |
 | **5557** | `vision_cmd` | camera_node | main_decision | `vision_cmd capture` |
 | **5558** | `color_result` | camera_node | main_decision | `color_result red` |
