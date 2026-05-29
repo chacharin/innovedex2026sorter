@@ -36,6 +36,11 @@ from utils.zmq_config import (
     SWEEP_STEP_DEG, SWEEP_TICK_SEC,
     ADDR_BIND,
 )
+from utils.node_log import banner, make_logger, ready
+
+NODE_NAME = "ARDUINO NODE — Servo Driver"
+# logger กลางของ node นี้ — พิมพ์ log ลง terminal (cmd / powershell) แบบ real-time
+_term = make_logger("arduino")
 
 
 class HardwareNode:
@@ -176,9 +181,9 @@ class HardwareNode:
         self._set_target(new_t)
 
     # ---------------- Helpers ----------------
-    def _log(self, msg: str):
+    def _log(self, msg: str, level: str = "INFO"):
         self.log_lbl.configure(text=msg)
-        print(f"[hardware] {msg}")
+        _term(msg, level)
 
     def _publish_status(self, status: str):
         # ไม่ส่ง ZMQ ซ้ำถ้า status ไม่เปลี่ยน เพื่อลด noise บน network
@@ -189,6 +194,7 @@ class HardwareNode:
             self.pub.send_string(f"{TOPIC_SERVO_STATUS} {status}")
         except Exception:
             pass
+        _term(f"status -> {status}", "STATE")
         color = "#2ecc71" if status == STATUS_IDLE else "#f39c12"
         # ส่งคำสั่ง update UI กลับไปทำบน main thread
         self.root.after(0, lambda: self.lbl_status.configure(
@@ -297,12 +303,19 @@ class HardwareNode:
 
 
 def main():
+    banner(NODE_NAME, [
+        f"SUB :{PORT_SERVO_CMD} ({TOPIC_SERVO_CMD})  <- คำสั่ง servo",
+        f"PUB :{PORT_SERVO_STATUS} ({TOPIC_SERVO_STATUS})  -> IDLE/BUSY",
+        f"firmata: {'available' if _HAS_FIRMATA else 'NOT installed -> DRY-RUN'}",
+    ])
     ctk.set_appearance_mode("Dark")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
     node = HardwareNode(root)
+    ready(NODE_NAME)
 
     def on_close():
+        _term("window closed -> shutting down", "STATE")
         node.shutdown()
         root.destroy()
 

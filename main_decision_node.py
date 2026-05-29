@@ -46,6 +46,11 @@ from utils.zmq_config import (
     CMD_CAPTURE, CMD_STOP, CMD_HOME,
     COLORS, DATA_DIR, ADDR_CONN,
 )
+from utils.node_log import banner, make_logger, ready
+
+NODE_NAME = "MAIN DECISION — The Sorter (Brain)"
+# logger กลางของ node นี้ — พิมพ์ log ลง terminal (cmd / powershell) แบบ real-time
+_term = make_logger("brain")
 
 
 # ผลลัพธ์ที่เป็นไปได้จาก _run_one()
@@ -247,9 +252,11 @@ class Brain:
     # Helpers
     # ===================================================================
     def _log(self, msg: str):
+        # พิมพ์ลง terminal (cmd / powershell) แบบ real-time พร้อม timestamp + tag
+        _term(msg)
+
         ts   = time.strftime("%H:%M:%S")
         line = f"[{ts}] {msg}\n"
-        print(line, end="")
 
         # ต้องสร้าง nested function เพราะ after() ต้องการ callable ไม่มี argument
         # และต้องการ capture ค่า line ณ เวลานี้
@@ -520,12 +527,20 @@ class Brain:
 
 
 def main():
+    banner(NODE_NAME, [
+        f"PUB :{PORT_SERVO_CMD} ({TOPIC_SERVO_CMD})   -> arduino_node",
+        f"SUB :{PORT_SERVO_STATUS} ({TOPIC_SERVO_STATUS})  <- IDLE/BUSY",
+        f"PUB :{PORT_VISION_CMD} ({TOPIC_VISION_CMD})   -> camera_node",
+        f"SUB :{PORT_VISION_RESULT} ({TOPIC_VISION_RESULT})  <- color",
+    ])
     ctk.set_appearance_mode("Dark")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
     brain = Brain(root)
+    ready(NODE_NAME)
 
     def on_close():
+        _term("window closed -> shutting down", "STATE")
         brain.shutdown()
         root.destroy()
 

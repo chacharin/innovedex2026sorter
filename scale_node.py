@@ -25,6 +25,11 @@ from utils.zmq_config import (
     HOME_POSE, SERVO_LIMITS, SERVO_PINS,
     DATA_DIR, RECORD_OPTIONS, ADDR_CONN,
 )
+from utils.node_log import banner, make_logger, ready
+
+NODE_NAME = "SCALE NODE — Jog & Record"
+# logger กลางของ node นี้ — พิมพ์ log ลง terminal (cmd / powershell) แบบ real-time
+_term = make_logger("scale")
 
 
 class TeachingNode:
@@ -128,6 +133,7 @@ class TeachingNode:
     # ---------------- Helpers ----------------
     def _set_status(self, text: str):
         """อัปเดต status label ด้วยข้อความที่กำหนด"""
+        _term(text, "STATE")
         self.status_lbl.configure(text=text)
 
     def _on_slider_moved(self, value, label):
@@ -153,7 +159,7 @@ class TeachingNode:
         try:
             self.pub.send_string(msg)
         except Exception as e:
-            print(f"[teach] pub err: {e}")
+            _term(f"pub err: {e}", "ERROR")
         self._set_status(f"Sent → {vals}")
 
     def _home(self):
@@ -217,12 +223,18 @@ class TeachingNode:
 
 
 def main():
+    banner(NODE_NAME, [
+        f"PUB :{PORT_SERVO_CMD} ({TOPIC_SERVO_CMD})  -> arduino_node",
+        f"data dir: {DATA_DIR}",
+    ])
     ctk.set_appearance_mode("Dark")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
     node = TeachingNode(root)
+    ready(NODE_NAME)
 
     def on_close():
+        _term("window closed -> shutting down", "STATE")
         node.shutdown()
         root.destroy()
 

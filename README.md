@@ -21,6 +21,7 @@
 10. [การเปิดโปรแกรมด้วย launch_all.py](#-การเปิดโปรแกรมด้วย-launch_allpy)
 11. [CSV Naming Convention](#-csv-naming-convention)
 12. [การแก้ไขปัญหาเบื้องต้น](#-การแก้ไขปัญหาเบื้องต้น)
+13. [ทางเลือก: ใช้ uv แทน Python + pip](#-ทางเลือก-ใช้-uv-แทน-python--pip)
 
 ---
 
@@ -727,6 +728,74 @@ HOME_POSE    = [90, 90, 90, 50]              # ตำแหน่ง Home ขอ
 SERVO_LIMITS = [(0,180),(0,180),(0,180),(40,85)]  # (min, max) ต่อ Servo
 SWEEP_STEP_DEG = 1.0                         # ความเร็ว sweep (องศา/tick)
 SWEEP_TICK_SEC = 0.02                        # ระยะเวลาต่อ tick (วินาที)
+```
+
+---
+
+## ⚡ ทางเลือก: ใช้ `uv` แทน Python + pip
+
+[`uv`](https://docs.astral.sh/uv/) คือเครื่องมือจัดการ Python project + dependency
+ที่เร็วมาก (เขียนด้วย Rust) ใช้แทนการสร้าง `venv` เองและ `pip install` ได้เลย
+โปรเจกต์นี้มี `pyproject.toml` + `uv.lock` อยู่แล้ว จึงพร้อมใช้กับ `uv` ทันที
+
+### 1️⃣ ติดตั้ง `uv`
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**macOS / Linux:**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 2️⃣ เพิ่ม `uv` เข้า PATH
+
+ตัวติดตั้งจะวาง `uv` ไว้ที่ `~/.local/bin` (`%USERPROFILE%\.local\bin` บน Windows)
+
+- **ปิดแล้วเปิด terminal ใหม่** 1 ครั้ง เพื่อให้ PATH อัปเดต
+- ตรวจสอบว่าใช้งานได้:
+
+```bash
+uv --version
+```
+
+> ถ้าพิมพ์ `uv` แล้วยัง "command not found" ให้เพิ่ม path เองชั่วคราว:
+> - PowerShell: `$env:Path += ";$env:USERPROFILE\.local\bin"`
+> - macOS / Linux: `export PATH="$HOME/.local/bin:$PATH"`
+
+### 3️⃣ เข้าไปที่โฟลเดอร์โปรเจกต์ แล้ว sync dependency
+
+```bash
+cd innovedex2026sorter
+uv sync
+```
+
+`uv sync` จะอ่าน `pyproject.toml` + `uv.lock` แล้ว:
+- สร้าง virtual environment ให้อัตโนมัติที่ `.venv/`
+- ติดตั้ง Python 3.14 และ dependency ทั้งหมดให้ตรงเวอร์ชันที่ระบุไว้
+
+### 4️⃣ เปิดทุก Node ด้วย `uv run`
+
+```bash
+uv run launch_all.py
+```
+
+`uv run` จะรัน `launch_all.py` ภายใน environment ของ `uv` โดยไม่ต้อง activate venv เอง
+แล้ว `launch_all.py` จะเปิดทั้ง 5 Node แต่ละหน้าต่างของตัวเอง
+
+> **เทียบกับวิธีเดิม:** `python -m venv venv` + `pip install -r requirements.txt`
+> + `.\venv\Scripts\activate` + `python launch_all.py`
+> ทั้งหมดนี้ยุบเหลือแค่ `uv sync` แล้ว `uv run launch_all.py`
+
+จะรัน Node เดี่ยวๆ ก็ได้เช่นกัน เช่น:
+
+```bash
+uv run arduino_node.py
+uv run camera_node.py
 ```
 
 ---

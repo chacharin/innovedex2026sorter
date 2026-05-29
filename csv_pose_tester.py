@@ -19,6 +19,8 @@ from tkinter import ttk, messagebox
 import customtkinter as ctk
 import zmq
 
+from utils.node_log import banner, make_logger, ready
+
 
 # =========================================================
 # CONFIG
@@ -27,6 +29,10 @@ DATA_DIR       = "data"
 PORT_SERVO_CMD = 5555
 TOPIC_SERVO_CMD = "servo_cmd"
 ADDR_CONN      = "tcp://localhost:{}"
+
+NODE_NAME = "CSV POSE TESTER"
+# logger กลางของ node นี้ — พิมพ์ log ลง terminal (cmd / powershell) แบบ real-time
+_term = make_logger("csvtest")
 
 
 # =========================================================
@@ -269,9 +275,10 @@ class CsvPoseTester:
     # LOG
     # =====================================================
     def _log(self, text):
+        # พิมพ์ลง terminal (cmd / powershell) แบบ real-time พร้อม timestamp + tag
+        _term(text)
         timestamp = time.strftime("%H:%M:%S")
         line      = f"[{timestamp}] {text}\n"
-        print(line, end="")
         self.log.insert("end", line)
         # see("end") ทำให้ log เลื่อนลงอัตโนมัติเมื่อมีบรรทัดใหม่
         self.log.see("end")
@@ -291,13 +298,19 @@ class CsvPoseTester:
 # MAIN
 # =========================================================
 def main():
+    banner(NODE_NAME, [
+        f"PUB :{PORT_SERVO_CMD} ({TOPIC_SERVO_CMD})  -> arduino_node",
+        f"data dir: {DATA_DIR}",
+    ])
     ctk.set_appearance_mode("Dark")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
 
     app = CsvPoseTester(root)
+    ready(NODE_NAME)
 
     def on_close():
+        _term("window closed -> shutting down", "STATE")
         app.shutdown()
         root.destroy()
 

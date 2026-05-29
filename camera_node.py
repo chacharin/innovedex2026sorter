@@ -35,8 +35,13 @@ from utils.zmq_config import (
     CMD_CAPTURE, COLORS, ADDR_BIND,
     DEFAULT_CAMERA_INDEX, DEFAULT_CONFIDENCE,
 )
+from utils.node_log import banner, make_logger, ready
 
 MODEL_PATH = "4color-detection.pt"
+
+NODE_NAME = "CAMERA NODE — YOLOv8 Vision"
+# logger กลางของ node นี้ — พิมพ์ log ลง terminal (cmd / powershell) แบบ real-time
+_term = make_logger("camera")
 
 
 class VisionNode:
@@ -161,6 +166,7 @@ class VisionNode:
     # ---------------- UI helpers ----------------
     def _set_status(self, text: str):
         """อัปเดต status label — thread-safe (ส่งคำสั่งไป main thread)"""
+        _term(text, "STATE")
         self.root.after(0, lambda: self.lbl_status.configure(text=text))
 
     def _set_live(self, text: str):
@@ -177,7 +183,7 @@ class VisionNode:
                     pass
             self.cap = self._make_capture(idx)
             self.cam_idx = idx
-            print(f"[vision] camera switched to index {idx}")
+            _term(f"camera switched to index {idx}")
 
     def _read_frame(self):
         with self.cap_lock:
@@ -266,7 +272,7 @@ class VisionNode:
         # หาสีที่พบมากที่สุดจากการโหวต
         top_results = Counter(votes).most_common(1)
         winner      = top_results[0][0]
-        print(f"[vision] vote {dict(Counter(votes))} -> {winner}")
+        _term(f"vote {dict(Counter(votes))} -> {winner}", "VOTE")
         return winner
 
     def _publish_result(self, color):
@@ -274,8 +280,9 @@ class VisionNode:
         result = color if color else "none"
         try:
             self.pub.send_string(f"{TOPIC_VISION_RESULT} {result}")
+            _term(f"published color_result -> {result}", "PUB")
         except Exception as e:
-            print(f"[vision] pub err: {e}")
+            _term(f"pub err: {e}", "ERROR")
         self._set_status(f"Detected color: {result}")
 
     # ---------------- ZMQ + manual ----------------
@@ -289,10 +296,11 @@ class VisionNode:
                 break
             parts = msg.split()
             if len(parts) >= 2 and parts[1] == CMD_CAPTURE:
+                _term("capture command received", "CMD")
                 if not self.ready.is_set():
                     # capture ถูกร้องขอก่อน YOLO โหลดเสร็จ — ตอบกลับ "none" เพื่อไม่ให้
                     # main_decision_node ค้างรอ
-                    print("[vision] capture requested before model is ready")
+                    _term("capture requested before model is ready", "WARN")
                     self._publish_result(None)
                     continue
                 color = self._capture_and_vote()
@@ -324,12 +332,19 @@ class VisionNode:
 
 
 def main():
+    banner(NODE_NAME, [
+        f"SUB :{PORT_VISION_CMD} ({TOPIC_VISION_CMD})  <- capture",
+        f"PUB :{PORT_VISION_RESULT} ({TOPIC_VISION_RESULT})  -> color",
+        f"model: {MODEL_PATH} (YOLO loads in background ...)",
+    ])
     ctk.set_appearance_mode("Dark")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
     node = VisionNode(root)
+    ready(NODE_NAME)
 
     def on_close():
+        _term("window closed -> shutting down", "STATE")
         node.shutdown()
         root.destroy()
 
