@@ -42,12 +42,18 @@ NODE_NAME = "ARDUINO NODE — Servo Driver"
 # logger กลางของ node นี้ — พิมพ์ log ลง terminal (cmd / powershell) แบบ real-time
 _term = make_logger("arduino")
 
+# ขา LED บนบอร์ด (Arduino Uno มี LED on-board ที่ขา 13) ใช้สำหรับปุ่มทดสอบบอร์ด
+# แยกจาก SERVO_PINS [8,9,10,11] จึงไม่กระทบการขับ servo เดิม
+LED_PIN          = 13
+LED_FLASH_COUNT  = 3      # กระพริบ 3 ครั้ง
+LED_FLASH_ON_SEC = 0.08   # ติด/ดับครั้งละ 80ms -> รัวๆ
+
 
 class HardwareNode:
     def __init__(self, root: ctk.CTk):
         self.root = root
         root.title("Arduino Node — Servo Driver")
-        root.geometry("480x620")
+        root.geometry("480x690")
         root.resizable(False, False)
 
         # สถานะ servo ปัจจุบัน (องศา) — เริ่มต้นที่ HOME_POSE
@@ -65,6 +71,8 @@ class HardwareNode:
         self.servos      = []
         self.running     = True
         self.emergency   = False   # set เมื่อรับคำสั่ง STOP
+        self.led_pin     = None    # digital output pin 13 (ตั้งค่าใน _connect_arduino)
+        self.flashing    = False   # กัน flash ซ้อนกันถ้ากดปุ่มรัวๆ
 
         # ZMQ
         self.ctx = zmq.Context.instance()
@@ -142,6 +150,16 @@ class HardwareNode:
             self.lbls.append(lbl)
             self.tgt_lbls.append(tlbl)
 
+        # ปุ่มทดสอบบอร์ด: สั่ง LED ขา 13 กระพริบรัวๆ 3 ครั้ง
+        # ใช้ตรวจว่าบอร์ดยังคุยกับคอมพิวเตอร์ได้ดี โดยไม่ยุ่งกับ servo
+        test_row = ctk.CTkFrame(self.root, fg_color="transparent")
+        test_row.pack(fill="x", padx=8, pady=(4, 2))
+        self.btn_led = ctk.CTkButton(
+            test_row, text="💡 LED 13 Flash (Test Board)",
+            height=34, font=("Tahoma", 16, "bold"),
+            command=self._flash_led)
+        self.btn_led.pack(fill="x")
+
         info = (f"SUB :{PORT_SERVO_CMD} ({TOPIC_SERVO_CMD})   "
                 f"PUB :{PORT_SERVO_STATUS} ({TOPIC_SERVO_STATUS})")
         ctk.CTkLabel(self.root, text=info,
@@ -166,6 +184,16 @@ class HardwareNode:
             self.connected = True
             self.lbl_conn.configure(text="● Arduino: CONNECTED", text_color="#2ecc71")
             self._log("Arduino connected. Homed.")
+
+            # ตั้งขา LED 13 เป็น digital output (แยก try เพื่อไม่ให้กระทบ servo
+            # ถ้าตั้งค่าไม่สำเร็จ — ปุ่ม flash จะตกไปอยู่โหมด DRY-RUN เอง)
+            try:
+                self.led_pin = self.board.get_pin(f'd:{LED_PIN}:o')
+                self.led_pin.write(0)
+                self._log(f"LED pin {LED_PIN} ready for board test.")
+            except Exception as e:
+                self.led_pin = None
+                self._log(f"LED pin {LED_PIN} setup failed: {e}", "WARN")
         except Exception as e:
             self.lbl_conn.configure(text="● Arduino: FAILED", text_color="#d63031")
             self._log(f"Arduino error: {e}\nRunning in DRY-RUN mode (no hardware).")
@@ -179,6 +207,41 @@ class HardwareNode:
             new_t       = list(self.target)
             new_t[axis] = max(lo, min(hi, new_t[axis] + delta))
         self._set_target(new_t)
+
+    # ---------------- LED flash (board self-test) ----------------
+    def _flash_led(self):
+        """กดปุ่ม -> สั่ง LED ขา 13 กระพริบรัวๆ 3 ครั้ง ใน background thread
+        (ไม่บล็อก GUI และไม่ยุ่งกับ servo / sweep loop)"""
+        if self.flashing:
+            self._log("LED flash still running — ignored", "WARN")
+            return
+        threading.Thread(target=self._flash_worker, daemon=True).start()
+
+    def _flash_worker(self):
+        self.flashing = True
+        try:
+            mode = "board" if (self.connected and self.led_pin is not None) else "DRY-RUN"
+            self._log(f"LED{LED_PIN} triple-flash ({mode}) ...", "TEST")
+            for _ in range(LED_FLASH_COUNT):
+                if not self.running:
+                    break
+                self._led_write(1)
+                time.sleep(LED_FLASH_ON_SEC)
+                self._led_write(0)
+                time.sleep(LED_FLASH_ON_SEC)
+            self._led_write(0)   # กันค้างติด
+            self._log(f"LED{LED_PIN} flash done ({mode}) — board link OK", "TEST")
+        finally:
+            self.flashing = False
+
+    def _led_write(self, value: int):
+        """เขียนค่าไปขา LED — เงียบไว้ถ้าไม่มีบอร์ด (DRY-RUN)"""
+        if self.led_pin is None:
+            return
+        try:
+            self.led_pin.write(value)
+        except Exception as e:
+            self._log(f"LED write err: {e}", "ERROR")
 
     # ---------------- Helpers ----------------
     def _log(self, msg: str, level: str = "INFO"):
@@ -295,6 +358,8 @@ class HardwareNode:
             self.sub.close(0)
         except Exception:
             pass
+        # ปิด LED ก่อนปล่อยบอร์ด เพื่อไม่ให้ค้างติด
+        self._led_write(0)
         if self.board:
             try:
                 self.board.exit()
